@@ -1,3 +1,19 @@
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot online!")
+
+def rodar_servidor():
+    porta = int(os.environ.get("PORT", 8080))
+    servidor = HTTPServer(("0.0.0.0", porta), SimpleHandler)
+    servidor.serve_forever()
+
+threading.Thread(target=rodar_servidor, daemon=True).start()
 import logging
 import requests
 from datetime import datetime, timedelta

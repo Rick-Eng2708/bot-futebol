@@ -42,7 +42,7 @@ LIGAS_ALVO = [71, 72, 73, 39, 140, 135, 78, 2, 13]
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# Armazena os IDs dos jogos já notificados para não repetir alertas
+# Controle de alertas já enviados para não duplicar (separado por tempo)
 jogos_notificados_live = set()
 
 # ==================== MODELO POISSON ====================
@@ -73,13 +73,11 @@ def obter_relatorio_dia():
         for item in jogos:
             liga_id = item["league"]["id"]
             if liga_id in LIGAS_ALVO:
-                # Extrai o horário em formato UTC e converte para hora de Brasília
                 data_utc = datetime.fromisoformat(item["fixture"]["date"].replace("Z", "+00:00"))
                 data_local = data_utc.astimezone(FUSO_BR)
                 hora_jogo = data_local.hour
                 hora_formatada = data_local.strftime("%H:%M")
                 
-                # Considera apenas jogos a partir das 11h
                 if hora_jogo >= 11:
                     time_casa = item["teams"]["home"]["name"]
                     time_fora = item["teams"]["away"]["name"]
@@ -104,7 +102,7 @@ def obter_relatorio_dia():
     
     return f"ℹ️ Nenhuma partida das ligas selecionadas cumpriu os filtros a partir das 11h hoje."
 
-# ==================== RADAR LIVE (11:00 às 23:00 - A cada 9 minutos) ====================
+# ==================== RADAR LIVE (11:00 às 23:00 - 1º E 2º TEMPOS) ====================
 async def loop_radar_live(app):
     await asyncio.sleep(10)
     while True:
@@ -112,7 +110,7 @@ async def loop_radar_live(app):
             agora_br = datetime.now(FUSO_BR)
             hora_atual = agora_br.hour
             
-            # Executa apenas entre 11h da manhã e 23h da noite (horário de Brasília)
+            # Só monitora na janela útil (11h às 23h de Brasília)
             if 11 <= hora_atual <= 23:
                 url = f"{BASE_URL}/fixtures?live=all"
                 resp = requests.get(url, headers=HEADERS, timeout=10).json()
@@ -120,7 +118,7 @@ async def loop_radar_live(app):
                 
                 for jogo in jogos_aovivo:
                     liga_id = jogo["league"]["id"]
-                    # Filtra apenas pelas ligas de interesse para ignorar torneios fracos
+                    
                     if liga_id in LIGAS_ALVO or not LIGAS_ALVO:
                         fixture_id = jogo["fixture"]["id"]
                         minuto = jogo["fixture"]["status"]["elapsed"]
@@ -128,28 +126,46 @@ async def loop_radar_live(app):
                         gols_fora = jogo["goals"]["away"] or 0
                         total_gols = gols_casa + gols_fora
                         
-                        # Critério de pressão: Segundo tempo (minuto 55 a 82), com poucos gols no placar
-                        if minuto and 55 <= minuto <= 82 and total_gols <= 2:
-                            if fixture_id not in jogos_notificados_live:
-                                time_casa = jogo["teams"]["home"]["name"]
-                                time_fora = jogo["teams"]["away"]["name"]
-                                liga = jogo["league"]["name"]
-                                
+                        time_casa = jogo["teams"]["home"]["name"]
+                        time_fora = jogo["teams"]["away"]["name"]
+                        liga = jogo["league"]["name"]
+
+                        # CENÁRIO 1: PRIMEIRO TEMPO (Minuto 20 ao 39 - Bom para Over 0.5 HT)
+                        chave_1t = f"{fixture_id}_1T"
+                        if minuto and 20 <= minuto <= 39 and total_gols <= 1:
+                            if chave_1t not in jogos_notificados_live:
                                 alerta = (
-                                    f"🔥 *ALERTA LIVE: PRESSÃO / GOL IMINENTE!*\n\n"
+                                    f"⚡ *RADAR 1º TEMPO: OPORTUNIDADE DE GOL!*\n\n"
                                     f"⚽ *{time_casa} {gols_casa} x {gols_fora} {time_fora}*\n"
                                     f"🏆 {liga}\n"
-                                    f"⏱ Minuto: *{minuto}'*\n"
-                                    f"💡 *Sugestão:* Over Gols Limite\n"
-                                    f"⚠️ Cenário quente no 2º tempo!"
+                                    f"⏱ Minuto: *{minuto}' (1º Tempo)*\n"
+                                    f"💡 *Sugestão:* Over 0.5 HT / Gol no 1º Tempo\n"
+                                    f"📈 Odds do HT valorizando agora!"
                                 )
                                 await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=alerta, parse_mode="Markdown")
-                                jogos_notificados_live.add(fixture_id)
+                                jogos_notificados_live.add(chave_1t)
                                 await asyncio.sleep(2)
+
+                        # CENÁRIO 2: SEGUNDO TEMPO (Minuto 58 ao 82 - Bom para Over Limite FT)
+                        chave_2t = f"{fixture_id}_2T"
+                        if minuto and 58 <= minuto <= 82 and total_gols <= 2:
+                            if chave_2t not in jogos_notificados_live:
+                                alerta = (
+                                    f"🔥 *RADAR 2º TEMPO: PRESSÃO / GOL IMINENTE!*\n\n"
+                                    f"⚽ *{time_casa} {gols_casa} x {gols_fora} {time_fora}*\n"
+                                    f"🏆 {liga}\n"
+                                    f"⏱ Minuto: *{minuto}' (2º Tempo)*\n"
+                                    f"💡 *Sugestão:* Over Gols Limite / Próximo Gol FT\n"
+                                    f"⚠️ Reta final com alta tendência a gol!"
+                                )
+                                await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=alerta, parse_mode="Markdown")
+                                jogos_notificados_live.add(chave_2t)
+                                await asyncio.sleep(2)
+
         except Exception as e:
             logging.error(f"Erro no Radar Live: {e}")
         
-        # Intervalo de 9 minutos (540 segundos) -> Economia perfeita para cota gratuita diária
+        # Mantém a checagem a cada 9 minutos para manter a cota segura
         await asyncio.sleep(540)
 
 # ==================== COMANDOS DO TELEGRAM ====================
@@ -157,9 +173,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != TELEGRAM_CHAT_ID:
         return
     await update.message.reply_text(
-        "🤖 *Bot de Análises & Radar Live Ativo!*\n\n"
+        "🤖 *Bot de Análises & Radar Live (1T + 2T) Ativo!*\n\n"
         "• Envie /entradas para ver os jogos filtrados do dia (a partir das 11h).\n"
-        "• O *Radar Live* monitora as partidas entre 11h e 23h (a cada 9 minutos) e envia alertas automáticos de pressão no segundo tempo!",
+        "• O *Radar Live* monitora as partidas das 11h às 23h (a cada 9 minutos) e envia alertas tanto no 1º tempo (Over HT) quanto no 2º tempo (Over Limite)!",
         parse_mode="Markdown"
     )
 
@@ -167,7 +183,7 @@ async def cmd_entradas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != TELEGRAM_CHAT_ID:
         return
     aviso = await update.message.reply_text("🔍 Consultando a rodada de hoje e calculando métricas...")
-    texto_final = obter_relatorio_dia()
+    texto_final =  obter_relatorio_dia()
     await aviso.delete()
     await update.message.reply_text(texto_final, parse_mode="Markdown")
 
@@ -180,5 +196,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("entradas", cmd_entradas))
     
-    print("Bot rodando com radar a cada 9 min no horário do Brasil!")
+    print("Bot rodando com radar 1T e 2T a cada 9 min!")
     app.run_polling()

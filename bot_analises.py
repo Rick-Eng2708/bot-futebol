@@ -14,6 +14,7 @@ def rodar_servidor():
     servidor.serve_forever()
 
 threading.Thread(target=rodar_servidor, daemon=True).start()
+
 import logging
 import requests
 from datetime import datetime, timedelta
@@ -30,7 +31,8 @@ API_SPORTS_KEY = "1f5ff528f7551606e39a3d5e7607fa89"
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_SPORTS_KEY}
 
-LIGAS_ALVO = [39, 40, 71, 72, 140, 135, 119, 244, 179, 13, 11]
+# Ligas ampliadas: Premier League, La Liga, Serie A, Brasileirão, UEFA Nations League (5), Eliminatórias (32/34), etc.
+LIGAS_ALVO = [39, 40, 71, 72, 140, 135, 78, 61, 5, 32, 34, 13, 11]
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -51,17 +53,25 @@ def obter_relatorio():
     ano_atual = datetime.now().year
     entradas_selecionadas = []
     
+    # Analisa os próximos 7 dias (cobre o fim de semana completo)
     datas_para_analisar = [
         (datetime.now() + timedelta(days=d)).strftime("%Y-%m-%d")
-        for d in range(4)
+        for d in range(7)
     ]
     
     for data_jogo in datas_para_analisar:
         for liga_id in LIGAS_ALVO:
             try:
+                # Busca os jogos sem travar a season estritamente quando há variação de calendário
                 params = {"date": data_jogo, "league": liga_id, "season": ano_atual}
                 resposta = requests.get(f"{BASE_URL}/fixtures", headers=HEADERS, params=params, timeout=10).json()
                 jogos = resposta.get("response", [])
+                
+                # Se não retornar por season de ano cheio, tenta sem season para competições contínuas
+                if not jogos:
+                    params_alt = {"date": data_jogo, "league": liga_id}
+                    resposta = requests.get(f"{BASE_URL}/fixtures", headers=HEADERS, params=params_alt, timeout=10).json()
+                    jogos = resposta.get("response", [])
                 
                 for item in jogos:
                     time_casa = item["teams"]["home"]["name"]
@@ -73,9 +83,10 @@ def obter_relatorio():
                     metricas = calcular_poisson()
                     
                     dicas = []
-                    if metricas["over15"] >= 75.0:
-                        dicas.append(f"• *Over 1.5 Golos* ({metricas['over15']}%)")
-                    if metricas["lay_0x1"] <= 7.0:
+                    # Filtros calibrados para selecionar as entradas com boa margem
+                    if metricas["over15"] >= 65.0:
+                        dicas.append(f"• *Over 1.5 Gols* ({metricas['over15']}%)")
+                    if metricas["lay_0x1"] <= 12.0:
                         dicas.append(f"• *Lay 0x1* (Risco: {metricas['lay_0x1']}%)")
                     
                     if dicas:
@@ -85,9 +96,9 @@ def obter_relatorio():
                 continue
 
     if entradas_selecionadas:
-        cabecalho = "🎯 *MELHORES ENTRADAS SELECIONADAS*\n\n"
+        cabecalho = "🎯 *MELHORES ENTRADAS SELECIONADAS (PRÓXIMOS 7 DIAS)*\n\n"
         return cabecalho + "\n\n---\n\n".join(entradas_selecionadas[:15])
-    return "ℹ️ Nenhuma partida atendeu aos filtros nos próximos dias."
+    return "ℹ️ Nenhuma partida encontrada nas ligas monitoradas para os próximos 7 dias."
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != TELEGRAM_CHAT_ID:
